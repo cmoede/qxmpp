@@ -26,6 +26,7 @@
 #include <QNetworkProxy>
 #include <QSslSocket>
 #include <QUrl>
+#include <QSslKey>
 #if (QT_VERSION >= QT_VERSION_CHECK(5, 0, 0))
 #include <QDnsLookup>
 #else
@@ -119,6 +120,16 @@ void QXmppOutgoingClientPrivate::connectToHost(const QString &host, quint16 port
     // override CA certificates if requested
     if (!config.caCertificates().isEmpty())
         q->socket()->setCaCertificates(config.caCertificates());
+
+    // set private key and certificate if available    
+    if (!config.sslPrivateKey().isNull())
+    {
+        q->socket()->setPrivateKey(config.sslPrivateKey());
+    }
+    if (!config.localSslCertificate().isNull())
+    {
+        q->socket()->setLocalCertificate(config.localSslCertificate());
+    }
 
     // respect proxy
     q->socket()->setProxy(config.networkProxy());

@@ -32,6 +32,7 @@
 
 class QNetworkProxy;
 class QSslCertificate;
+class QSslKey;
 class QXmppConfigurationPrivate;
 
 /// \brief The QXmppConfiguration class holds configuration options.
@@ -150,6 +151,11 @@ public:
     QList<QSslCertificate> caCertificates() const;
     void setCaCertificates(const QList<QSslCertificate> &);
 
+    QSslKey sslPrivateKey() const;
+    void setSslPrivateKey(const QSslKey &);
+
+    QSslCertificate localSslCertificate() const;
+    void setLocalSslCertificate(const QSslCertificate &);
 private:
     QSharedDataPointer<QXmppConfigurationPrivate> d;
 };

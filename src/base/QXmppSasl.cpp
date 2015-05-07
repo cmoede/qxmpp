@@ -102,7 +102,9 @@ void QXmppSaslAuth::toXml(QXmlStreamWriter *writer) const
     writer->writeStartElement("auth");
     writer->writeAttribute("xmlns", ns_xmpp_sasl);
     writer->writeAttribute("mechanism", m_mechanism);
-    if (!m_value.isEmpty())
+    if (m_mechanism == "EXTERNAL")
+        writer->writeCharacters("=");
+    else if (!m_value.isEmpty())
         writer->writeCharacters(m_value.toBase64());
     writer->writeEndElement();
 }
@@ -234,7 +236,7 @@ QXmppSaslClient::~QXmppSaslClient()
 
 QStringList QXmppSaslClient::availableMechanisms()
 {
-    return QStringList() << "PLAIN" << "DIGEST-MD5" << "ANONYMOUS" << "X-FACEBOOK-PLATFORM" << "X-MESSENGER-OAUTH2" << "X-OAUTH2";
+    return QStringList() << "PLAIN" << "DIGEST-MD5" << "ANONYMOUS" << "X-FACEBOOK-PLATFORM" << "X-MESSENGER-OAUTH2" << "X-OAUTH2" << "EXTERNAL";
 }
 
 /// Creates an SASL client for the given mechanism.
@@ -253,6 +255,8 @@ QXmppSaslClient* QXmppSaslClient::create(const QString &mechanism, QObject *pare
         return new QXmppSaslClientWindowsLive(parent);
     } else if (mechanism == "X-OAUTH2") {
         return new QXmppSaslClientGoogle(parent);
+    } else if (mechanism == "EXTERNAL") {
+        return new QXmppSaslClientExternal(parent);
     } else {
         return 0;
     }
@@ -521,6 +525,21 @@ bool QXmppSaslClientPlain::respond(const QByteArray &challenge, QByteArray &resp
         warning("QXmppSaslClientPlain : Invalid step");
         return false;
     }
+}
+
+QXmppSaslClientExternal::QXmppSaslClientExternal(QObject *parent)
+    : QXmppSaslClient(parent)
+{
+}
+QString QXmppSaslClientExternal::mechanism() const
+{
+    return "EXTERNAL";
+}
+bool QXmppSaslClientExternal::respond(const QByteArray& challenge, QByteArray &response)
+{
+    Q_UNUSED(challenge);
+    response = QByteArray();
+    return true;
 }
 
 QXmppSaslClientWindowsLive::QXmppSaslClientWindowsLive(QObject *parent)

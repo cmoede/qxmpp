@@ -262,6 +262,16 @@ private:
     int m_step;
 };
 
+class QXmppSaslClientExternal : public QXmppSaslClient
+{
+public:
+    QXmppSaslClientExternal(QObject *parent = 0);
+    QString mechanism() const;
+    bool respond(const QByteArray &challenge, QByteArray &response);
+private:
+};
+
+
 class QXmppSaslClientWindowsLive : public QXmppSaslClient
 {
 public:

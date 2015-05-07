@@ -23,6 +23,7 @@
 
 #include <QNetworkProxy>
 #include <QSslSocket>
+#include <QSslKey>
 
 #include "QXmppConfiguration.h"
 #include "QXmppUtils.h"
@@ -74,6 +75,8 @@ public:
     QNetworkProxy networkProxy;
 
     QList<QSslCertificate> caCertificates;
+    QSslCertificate localSslCertificate;
+    QSslKey sslPrivateKey;
 };
 
 QXmppConfigurationPrivate::QXmppConfigurationPrivate()
@@ -595,4 +598,36 @@ void QXmppConfiguration::setCaCertificates(const QList<QSslCertificate> &caCerti
 QList<QSslCertificate> QXmppConfiguration::caCertificates() const
 {
     return d->caCertificates;
+}
+
+/// Returns the client's ssl private key
+
+QSslKey QXmppConfiguration::sslPrivateKey() const
+{
+    return d->sslPrivateKey;
+}
+
+/// Sets the client's ssl private key
+///
+/// If you set the private key, you need to set the client's local ssl certificate too. (see localSslCertificate)
+
+void QXmppConfiguration::setSslPrivateKey(const QSslKey &sslPrivateKey)
+{
+    d->sslPrivateKey = sslPrivateKey;
+}
+
+/// Returns the client's local ssl certificate
+
+QSslCertificate QXmppConfiguration::localSslCertificate() const
+{
+    return d->localSslCertificate;
+}
+
+/// Sets the client's local ssl certificate, you need to set the client's private key too. (see sslPrivateKey)
+///
+/// If you set the ssl local client certificate
+
+void QXmppConfiguration::setLocalSslCertificate(const QSslCertificate &localSslCertificate)
+{
+    d->localSslCertificate = localSslCertificate;
 }
