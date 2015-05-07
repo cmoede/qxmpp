@@ -44,15 +44,28 @@ QXmppInvokable::~QXmppInvokable()
 {
 }
 
-QVariant QXmppInvokable::dispatch( const QByteArray & method, const QList< QVariant > & args )
+QVariant QXmppInvokable::dispatch( const QByteArray & method, const QList< QVariant > & args, const QXmppRpcInvokeIq* iq )
 {
+    bool passIq = false;
+    const QByteArray iqType = QMetaObject::normalizedType("const QXmppRpcInvokeIq *");
     buildMethodHash();
 
     if( !m_methodHash.contains(method))
         return QVariant();
 
     int idx = m_methodHash[method];
-    if( paramTypes( args) != metaObject()->method(idx).parameterTypes ())
+    
+
+    // Get method args description and check if first is QXmppIq pointer
+    QList<QByteArray> argTypes = metaObject()->method(idx).parameterTypes();
+    if (argTypes.count() > 0 &&
+        argTypes.first() == iqType) {
+        passIq = true;
+        argTypes.removeFirst();
+    }
+
+    // Check method arg count & types
+    if( paramTypes( args) != argTypes)
         return QVariant();
 
     const char *typeName = metaObject()->method(idx).typeName();
@@ -67,6 +80,11 @@ QVariant QXmppInvokable::dispatch( const QByteArray & method, const QList< QVari
     QGenericReturnArgument ret( typeName, result );
     QList<QGenericArgument> genericArgs;
     QList<QVariant>::ConstIterator iter = args.begin();
+   
+    // Add Iq if first arg matches
+    if (passIq) {
+        genericArgs << QGenericArgument(iqType, & iq);
+    }
     while( iter != args.end())
     {
         const void *data = iter->data();
@@ -93,7 +111,7 @@ QVariant QXmppInvokable::dispatch( const QByteArray & method, const QList< QVari
     }
     else
     {
-        qDebug("No such method '%s'", method.constData() );
+        qWarning("No such method '%s'", method.constData() );
         return QVariant();
     }
 }

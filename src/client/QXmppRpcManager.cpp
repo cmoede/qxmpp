@@ -65,7 +65,8 @@ void QXmppRpcManager::invokeInterfaceMethod( const QXmppRpcInvokeIq &iq )
             if ( iface->interfaces().contains(method) )
             {
                 QVariant result = iface->dispatch(method.toLatin1(),
-                                                  iq.arguments() );
+                                                  iq.arguments(),
+                                                  &iq );
                 QXmppRpcResponseIq resultIq;
                 resultIq.setId(iq.id());
                 resultIq.setTo(iq.from());

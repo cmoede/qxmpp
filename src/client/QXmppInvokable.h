@@ -32,6 +32,8 @@
 
 #include "QXmppGlobal.h"
 
+class QXmppRpcInvokeIq;
+
 /**
 This is the base class for all objects that will be invokable via RPC.  All public slots of objects derived from this class will be exposed to the RPC interface.  As a note for all methods, they can only understand types that QVariant knows about.
 
@@ -50,7 +52,7 @@ public:
          * that is invoked will be done in a thread safe manner.  It should be noted that while this method
          * is threadsafe and reentrant the side affects of the methods invoked may not be.
          */
-        QVariant dispatch( const QByteArray &method, const QList<QVariant> &args = QList<QVariant>() );
+        QVariant dispatch( const QByteArray &method, const QList<QVariant> &args = QList<QVariant>(), const QXmppRpcInvokeIq *iq = NULL );
 
         /**
          * Utility method to convert a QList<QVariant> to a list of types for type
