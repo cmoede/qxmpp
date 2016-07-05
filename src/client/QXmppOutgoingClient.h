@@ -99,9 +99,11 @@ private slots:
     void pingSend();
     void pingTimeout();
 
+    void connectTimeout();
 private:
     void sendNonSASLAuth(bool plaintext);
     void sendNonSASLAuthQuery();
+    void sessionStarted();
 
     friend class QXmppOutgoingClientPrivate;
     QXmppOutgoingClientPrivate * const d;

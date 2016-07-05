@@ -91,6 +91,7 @@ public:
     {
         NoError,            ///< No error.
         SocketError,        ///< Error due to TCP socket.
+        ConnectTimeoutError, ///< the server did not respond (fast enough) to our initial messages
         KeepAliveError,     ///< Error due to no response to a keep alive.
         XmppStreamError     ///< Error due to XML stream.
     };

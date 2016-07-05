@@ -94,8 +94,9 @@ public:
     QXmppSaslClient *saslClient;
 
     // Timers
+    QTimer *connectTimeoutTimer;
     QTimer *pingTimer;
-    QTimer *timeoutTimer;
+    QTimer *pingTimeoutTimer;
 
 private:
     QXmppOutgoingClient *q;
@@ -108,7 +109,8 @@ QXmppOutgoingClientPrivate::QXmppOutgoingClientPrivate(QXmppOutgoingClient *qq)
     , isAuthenticated(false)
     , saslClient(0)
     , pingTimer(0)
-    , timeoutTimer(0)
+    , pingTimeoutTimer(0)
+    , connectTimeoutTimer(0)
     , q(qq)
 {
 }
@@ -190,15 +192,21 @@ QXmppOutgoingClient::QXmppOutgoingClient(QObject *parent)
                     this, SLOT(pingSend()));
     Q_ASSERT(check);
 
-    d->timeoutTimer = new QTimer(this);
-    d->timeoutTimer->setSingleShot(true);
-    check = connect(d->timeoutTimer, SIGNAL(timeout()),
-                    this, SLOT(pingTimeout()));
+    // ping timeout timer
+    d->pingTimeoutTimer = new QTimer(this);
+    d->pingTimeoutTimer->setSingleShot(true);
+    check = connect(d->pingTimeoutTimer, SIGNAL(timeout()),
+                    this, SLOT(connectTimeout()));
     Q_ASSERT(check);
 
-    check = connect(this, SIGNAL(connected()),
-                    this, SLOT(pingStart()));
-    Q_ASSERT(check);
+    // connect timeout timer
+    d->connectTimeoutTimer = new QTimer(this);
+    d->connectTimeoutTimer->setSingleShot(true);
+    check = connect(d->connectTimeoutTimer, SIGNAL(timeout()),
+                    this, SLOT(pingTimeout()));
+
+
+
 
     check = connect(this, SIGNAL(disconnected()),
                     this, SLOT(pingStop()));
@@ -223,6 +231,10 @@ QXmppConfiguration& QXmppOutgoingClient::configuration()
 
 void QXmppOutgoingClient::connectToHost()
 {
+    if (d->config.connectTimeout() > 0) {
+        d->connectTimeoutTimer->start(d->config.connectTimeout() * 1000);
+    }
+
     // if an explicit host was provided, connect to it
     if (!d->config.host().isEmpty() && d->config.port()) {
         d->connectToHost(d->config.host(), d->config.port());
@@ -347,11 +359,19 @@ void QXmppOutgoingClient::handleStream(const QDomElement &streamElement)
         }
     }
 }
+void QXmppOutgoingClient::sessionStarted()
+{
+    d->connectTimeoutTimer->stop();
+    d->sessionStarted = true;
+    pingStart();
+    emit connected();
+}
 
 void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
 {
-    // if we receive any kind of data, stop the timeout timer
-    d->timeoutTimer->stop();
+    // if we receive any kind of data, stop the ping timeout timer
+    d->pingTimeoutTimer->stop();
+
 
     const QString ns = nodeRecv.namespaceURI();
 
@@ -491,8 +511,7 @@ void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
             sendPacket(session);
         } else {
             // otherwise we are done
-            d->sessionStarted = true;
-            emit connected();
+            sessionStarted();
         }
     }
     else if(ns == ns_stream && nodeRecv.tagName() == "error")
@@ -584,8 +603,7 @@ void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
                 session.parse(nodeRecv);
 
                 // xmpp connection made
-                d->sessionStarted = true;
-                emit connected();
+                sessionStarted();
             }
             else if(QXmppBindIq::isBindIq(nodeRecv) && id == d->bindId)
             {
@@ -618,8 +636,7 @@ void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
                         sendPacket(session);
                     } else {
                         // otherwise we are done
-                        d->sessionStarted = true;
-                        emit connected();
+                        sessionStarted();
                     }
                 }
             }
@@ -633,8 +650,7 @@ void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
                 d->isAuthenticated = true;
 
                 // xmpp connection made
-                d->sessionStarted = true;
-                emit connected();
+                sessionStarted();
             }
             else if(QXmppNonSASLAuthIq::isNonSASLAuthIq(nodeRecv))
             {
@@ -734,7 +750,7 @@ void QXmppOutgoingClient::pingStop()
 {
     // stop all timers
     d->pingTimer->stop();
-    d->timeoutTimer->stop();
+    d->pingTimeoutTimer->stop();
 }
 
 void QXmppOutgoingClient::pingSend()
@@ -748,8 +764,8 @@ void QXmppOutgoingClient::pingSend()
     const int timeout = configuration().keepAliveTimeout();
     if (timeout > 0)
     {
-        d->timeoutTimer->setInterval(timeout * 1000);
-        d->timeoutTimer->start();
+        d->pingTimeoutTimer->setInterval(timeout * 1000);
+        d->pingTimeoutTimer->start();
     }
 }
 
@@ -758,6 +774,12 @@ void QXmppOutgoingClient::pingTimeout()
     warning("Ping timeout");
     disconnectFromHost();
     emit error(QXmppClient::KeepAliveError);
+}
+void QXmppOutgoingClient::connectTimeout()
+{
+    warning("connect timeout");
+    disconnectFromHost();
+    emit error(QXmppClient::ConnectTimeoutError);
 }
 
 void QXmppOutgoingClient::sendNonSASLAuth(bool plainText)

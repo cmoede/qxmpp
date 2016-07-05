@@ -156,6 +156,9 @@ public:
 
     QSslCertificate localSslCertificate() const;
     void setLocalSslCertificate(const QSslCertificate &);
+
+    int connectTimeout() const;
+    void setConnectTimeout(int secs);
 private:
     QSharedDataPointer<QXmppConfigurationPrivate> d;
 };

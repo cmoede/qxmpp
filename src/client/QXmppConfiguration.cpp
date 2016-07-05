@@ -67,6 +67,9 @@ public:
     bool useNonSASLAuthentication;
     // default is true
     bool ignoreSslErrors;
+    // keep alive timout in seconds, if zero -> wait forever
+    int connectTimeout;
+
 
     QXmppConfiguration::StreamSecurityMode streamSecurityMode;
     QXmppConfiguration::NonSASLAuthMechanism nonSASLAuthMechanism;
@@ -94,6 +97,7 @@ QXmppConfigurationPrivate::QXmppConfigurationPrivate()
     , streamSecurityMode(QXmppConfiguration::TLSEnabled)
     , nonSASLAuthMechanism(QXmppConfiguration::NonSASLDigest)
     , saslAuthMechanism("DIGEST-MD5")
+    , connectTimeout(0)
 {
 }
 
@@ -630,4 +634,14 @@ QSslCertificate QXmppConfiguration::localSslCertificate() const
 void QXmppConfiguration::setLocalSslCertificate(const QSslCertificate &localSslCertificate)
 {
     d->localSslCertificate = localSslCertificate;
+}
+
+int QXmppConfiguration::connectTimeout() const
+{
+    return d->connectTimeout;
+}
+
+void QXmppConfiguration::setConnectTimeout(int secs)
+{
+    d->connectTimeout = secs;
 }
