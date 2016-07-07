@@ -85,6 +85,8 @@ private slots:
     void _q_socketReadyRead();
 
 private:
+    void parseStreamHeader();
+
     QXmppStreamPrivate * const d;
 };
 

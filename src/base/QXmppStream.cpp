@@ -45,17 +45,25 @@ class QXmppStreamPrivate
 {
 public:
     QXmppStreamPrivate();
+    ~QXmppStreamPrivate();
 
     QByteArray dataBuffer;
     QSslSocket* socket;
 
     // stream state
     QByteArray streamStart;
+
+    QRegExp* startStreamExp;
 };
 
 QXmppStreamPrivate::QXmppStreamPrivate()
-    : socket(0)
+    : socket(0),
+      startStreamExp(NULL)
 {
+}
+QXmppStreamPrivate::~QXmppStreamPrivate()
+{
+    delete startStreamExp;
 }
 
 /// Constructs a base XMPP stream.
@@ -199,32 +207,64 @@ void QXmppStream::_q_socketError(QAbstractSocket::SocketError socketError)
     warning(QString("Socket error: " + socket()->errorString()));
 }
 
+void QXmppStream::parseStreamHeader()
+{
+    if (!d->startStreamExp) {
+        d->startStreamExp = new QRegExp("^(<\\?xml.*\\?>)?\\s*<stream:stream.*>");
+        d->startStreamExp->setMinimal(true);
+    }
+
+    const QString strData = QString::fromUtf8(d->dataBuffer);
+    if (strData.contains(*d->startStreamExp)) {
+        d->streamStart = d->startStreamExp->cap(0).toUtf8();
+        d->dataBuffer.remove(0, d->streamStart.length());
+    } else {
+      if (d->dataBuffer.length() > 500) {
+          warning("received more than 500 bytes, but no stream header found - disconnecting");
+          disconnectFromHost();
+      }
+    }
+}
+
 void QXmppStream::_q_socketReadyRead()
 {
+    bool streamStart = false;
     d->dataBuffer.append(d->socket->readAll());
+    if (d->streamStart.length() == 0) {
+        parseStreamHeader();
+        streamStart = true;
+    }
+
+    if (d->streamStart.length() == 0) {
+        return;
+    }
 
     // handle whitespace pings
     if (!d->dataBuffer.isEmpty() && d->dataBuffer.trimmed().isEmpty()) {
         d->dataBuffer.clear();
         handleStanza(QDomElement());
+        return;
     }
 
-    // FIXME : maybe these QRegExps could be static?
-    QRegExp startStreamRegex("^(<\\?xml.*\\?>)?\\s*<stream:stream.*>");
-    startStreamRegex.setMinimal(true);
-    QRegExp endStreamRegex("</stream:stream>$");
-    endStreamRegex.setMinimal(true);
+    // check for stream end
+    bool streamEnds = false;
+    int streamEndIndex = d->dataBuffer.indexOf("</stream:stream>");
+    if (streamEndIndex == d->dataBuffer.length() - 16) {
+        streamEnds = true;
+        d->dataBuffer.remove(d->dataBuffer.length() - 16, 16);
+    }
 
-    // check whether we need to add stream start / end elements
-    QByteArray completeXml = d->dataBuffer;
-    const QString strData = QString::fromUtf8(d->dataBuffer);
-    bool streamStart = false;
-    if (d->streamStart.isEmpty() && strData.contains(startStreamRegex))
-        streamStart = true;
-    else
-        completeXml.prepend(d->streamStart);
-    if (!strData.contains(endStreamRegex))
-        completeXml.append(streamRootElementEnd);
+    QByteArray completeXml;
+    completeXml.append(d->streamStart);
+    completeXml.append(d->dataBuffer);
+    completeXml.append("</stream:stream>");
+
+    if (streamEnds) {
+        d->streamStart.clear();
+    }
+    if (completeXml.trimmed() == "") {
+        return;
+    }
 
     // check whether we have a valid XML document
     QDomDocument doc;
@@ -232,10 +272,8 @@ void QXmppStream::_q_socketReadyRead()
         return;
 
     // remove data from buffer
-    logReceived(strData);
+    //logReceived(strData);
     d->dataBuffer.clear();
-    if (streamStart)
-        d->streamStart = startStreamRegex.cap(0).toUtf8();
 
     // process stream start
     if (streamStart)
