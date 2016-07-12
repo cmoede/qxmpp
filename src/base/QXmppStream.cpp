@@ -140,6 +140,10 @@ bool QXmppStream::sendData(const QByteArray &data)
 
 bool QXmppStream::sendPacket(const QXmppStanza &packet)
 {
+    if (!isAuthenticated()) {
+        warning("not authenticaed - not sending packet");
+        return false;
+    }
     // prepare packet
     QByteArray data;
     QXmlStreamWriter xmlStream(&data);
@@ -272,7 +276,7 @@ void QXmppStream::_q_socketReadyRead()
         return;
 
     // remove data from buffer
-    //logReceived(strData);
+    logReceived(QString::fromUtf8(d->dataBuffer));
     d->dataBuffer.clear();
 
     // process stream start

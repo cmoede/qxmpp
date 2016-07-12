@@ -147,7 +147,7 @@ public:
     QXmppPresence clientPresence() const;
     void setClientPresence(const QXmppPresence &presence);
 
-    QXmppConfiguration &configuration();
+    const QXmppConfiguration &configuration() const;
     QXmppLogger *logger() const;
     void setLogger(QXmppLogger *logger);
 

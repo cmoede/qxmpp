@@ -62,6 +62,16 @@
 class QXmppOutgoingClientPrivate
 {
 public:
+    enum State
+    {
+        Unset,
+        WaitingForStreamFeatures,
+        StartingTLS,
+        TLSStarted,
+        Authenticating,
+        Authenticated,
+    };
+
     QXmppOutgoingClientPrivate(QXmppOutgoingClient *q);
     void connectToHost(const QString &host, quint16 port);
 
@@ -98,6 +108,8 @@ public:
     QTimer *pingTimer;
     QTimer *pingTimeoutTimer;
 
+    State state;
+
 private:
     QXmppOutgoingClient *q;
 };
@@ -112,6 +124,7 @@ QXmppOutgoingClientPrivate::QXmppOutgoingClientPrivate(QXmppOutgoingClient *qq)
     , pingTimeoutTimer(0)
     , connectTimeoutTimer(0)
     , q(qq)
+    , state(Unset)
 {
 }
 
@@ -222,9 +235,17 @@ QXmppOutgoingClient::~QXmppOutgoingClient()
 
 /// Returns a reference to the stream's configuration.
 
+const QXmppConfiguration& QXmppOutgoingClient::configuration() const
+{
+    return d->config;
+}
 QXmppConfiguration& QXmppOutgoingClient::configuration()
 {
     return d->config;
+}
+void QXmppOutgoingClient::setConfiguration(const QXmppConfiguration& conf)
+{
+    d->config = conf;
 }
 
 /// Attempts to connect to the XMPP server.
@@ -269,6 +290,12 @@ void QXmppOutgoingClient::_q_dnsLookupFinished()
 
 bool QXmppOutgoingClient::isAuthenticated() const
 {
+    const QXmppConfiguration::StreamSecurityMode localSecurity = configuration().streamSecurityMode();
+    if (localSecurity == QXmppConfiguration::TLSRequired &&
+        !socket()->isEncrypted()) {
+        return false;
+    }
+
     return d->isAuthenticated;
 }
 
@@ -344,6 +371,18 @@ void QXmppOutgoingClient::handleStart()
 
 void QXmppOutgoingClient::handleStream(const QDomElement &streamElement)
 {
+    if (d->state == QXmppOutgoingClientPrivate::Unset ||
+          d->state == QXmppOutgoingClientPrivate::TLSStarted ||
+          d->state == QXmppOutgoingClientPrivate::Authenticated) {
+        d->state = QXmppOutgoingClientPrivate::WaitingForStreamFeatures;
+    } else {
+        warning("handleStart in invalid state - disconnecting");
+        disconnectFromHost();
+        return;
+    }
+
+
+
     if(d->streamId.isEmpty())
         d->streamId = streamElement.attribute("id");
     if (d->streamFrom.isEmpty())
@@ -367,11 +406,246 @@ void QXmppOutgoingClient::sessionStarted()
     emit connected();
 }
 
+void QXmppOutgoingClient::handleStreamFeaturesOrDisconnect(const QDomElement& nodeRecv)
+{
+    if (!QXmppStreamFeatures::isStreamFeatures(nodeRecv)) {
+        warning("unexpected node received, stream features expected");
+        disconnectFromHost();
+        return;
+    }
+
+    QXmppStreamFeatures features;
+    features.parse(nodeRecv);
+
+    if (!socket()->isEncrypted()) {
+        // determine TLS mode to use
+        const QXmppConfiguration::StreamSecurityMode localSecurity = configuration().streamSecurityMode();
+        const QXmppStreamFeatures::Mode remoteSecurity = features.tlsMode();
+        if (!socket()->supportsSsl() &&
+            (localSecurity == QXmppConfiguration::TLSRequired ||
+             remoteSecurity == QXmppStreamFeatures::Required))
+        {
+            warning("Disconnecting as TLS is required, but SSL support is not available");
+            disconnectFromHost();
+            return;
+        }
+        if (localSecurity == QXmppConfiguration::TLSRequired &&
+          remoteSecurity == QXmppStreamFeatures::Disabled)
+        {
+            warning("Disconnecting as TLS is required, but not supported by the server");
+            disconnectFromHost();
+            return;
+        }
+
+        if (socket()->supportsSsl() &&
+            localSecurity != QXmppConfiguration::TLSDisabled &&
+            remoteSecurity != QXmppStreamFeatures::Disabled)
+        {
+            // enable TLS as it is support by both parties
+            d->state = QXmppOutgoingClientPrivate::StartingTLS;
+            sendData("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
+            return;
+        }
+    }
+
+    // handle authentication
+    const bool nonSaslAvailable = features.nonSaslAuthMode() != QXmppStreamFeatures::Disabled;
+    const bool saslAvailable = !features.authMechanisms().isEmpty();
+    if (saslAvailable && configuration().useSASLAuthentication())
+    {
+        // supported and preferred SASL auth mechanisms
+        QStringList supportedMechanisms = QXmppSaslClient::availableMechanisms();
+        const QString preferredMechanism = configuration().saslAuthMechanism();
+        if (configuration().facebookAppId().isEmpty() || configuration().facebookAccessToken().isEmpty())
+            supportedMechanisms.removeAll("X-FACEBOOK-PLATFORM");
+        if (configuration().windowsLiveAccessToken().isEmpty())
+            supportedMechanisms.removeAll("X-MESSENGER-OAUTH2");
+        if (configuration().googleAccessToken().isEmpty())
+            supportedMechanisms.removeAll("X-OAUTH2");
+
+        // determine SASL Authentication mechanism to use
+        QStringList commonMechanisms;
+        QString usedMechanism;
+        foreach (const QString &mechanism, features.authMechanisms()) {
+            if (supportedMechanisms.contains(mechanism))
+                commonMechanisms << mechanism;
+        }
+        if (commonMechanisms.isEmpty()) {
+            warning("No supported SASL Authentication mechanism available");
+            disconnectFromHost();
+            return;
+        } else if (!commonMechanisms.contains(preferredMechanism)) {
+            info(QString("Desired SASL Auth mechanism '%1' is not available, selecting first available one").arg(preferredMechanism));
+            usedMechanism = commonMechanisms.first();
+        } else {
+            usedMechanism = preferredMechanism;
+        }
+
+        d->saslClient = QXmppSaslClient::create(usedMechanism, this);
+        if (!d->saslClient) {
+            warning("SASL mechanism negotiation failed");
+            disconnectFromHost();
+            return;
+        }
+        info(QString("SASL mechanism '%1' selected").arg(d->saslClient->mechanism()));
+        d->saslClient->setHost(d->config.domain());
+        d->saslClient->setServiceType("xmpp");
+        if (d->saslClient->mechanism() == "X-FACEBOOK-PLATFORM") {
+            d->saslClient->setUsername(configuration().facebookAppId());
+            d->saslClient->setPassword(configuration().facebookAccessToken());
+        } else if (d->saslClient->mechanism() == "X-MESSENGER-OAUTH2") {
+            d->saslClient->setPassword(configuration().windowsLiveAccessToken());
+        } else if (d->saslClient->mechanism() == "X-OAUTH2") {
+            d->saslClient->setUsername(configuration().user());
+            d->saslClient->setPassword(configuration().googleAccessToken());
+        } else {
+            d->saslClient->setUsername(configuration().user());
+            d->saslClient->setPassword(configuration().password());
+        }
+
+        // send SASL auth request
+        QByteArray response;
+        if (!d->saslClient->respond(QByteArray(), response)) {
+            warning("SASL initial response failed");
+            disconnectFromHost();
+            return;
+        }
+        d->state = QXmppOutgoingClientPrivate::Authenticating;
+        sendPacket(QXmppSaslAuth(d->saslClient->mechanism(), response));
+        return;
+    } else if(nonSaslAvailable && configuration().useNonSASLAuthentication()) {
+        d->state = QXmppOutgoingClientPrivate::Authenticating;
+        sendNonSASLAuthQuery();
+        return;
+    }
+    if (!isAuthenticated()) {
+        warning("not authenticated");
+        disconnectFromHost();
+        return;
+    }
+    // store whether session is available
+    d->sessionAvailable = (features.sessionMode() != QXmppStreamFeatures::Disabled);
+
+    // check whether bind is available
+    if (features.bindMode() != QXmppStreamFeatures::Disabled)
+    {
+        QXmppBindIq bind;
+        bind.setType(QXmppIq::Set);
+        bind.setResource(configuration().resource());
+        d->bindId = bind.id();
+        sendPacket(bind);
+        d->state = QXmppOutgoingClientPrivate::Authenticated;
+        return;
+    }
+
+    // check whether session is available
+    if (d->sessionAvailable)
+    {
+        // start session if it is available
+        QXmppSessionIq session;
+        session.setType(QXmppIq::Set);
+        session.setTo(configuration().domain());
+        d->sessionId = session.id();
+        sendPacket(session);
+        d->state = QXmppOutgoingClientPrivate::Authenticated;
+    } else {
+        // otherwise we are done
+        sessionStarted();
+        d->state = QXmppOutgoingClientPrivate::Authenticated;
+    }
+
+}
+
+void QXmppOutgoingClient::handleTLSProceedOrDisconnect(const QDomElement& nodeRecv)
+{
+    if(nodeRecv.tagName() != "proceed") {
+        warning("did expect tls proceed stanza - disonnecting");
+        disconnectFromHost();
+        return;
+    }
+
+    debug("Starting encryption");
+    socket()->startClientEncryption();
+    d->state = QXmppOutgoingClientPrivate::TLSStarted;
+}
+void QXmppOutgoingClient::handleAuthResponseOrDisonnect(const QDomElement& nodeRecv)
+{
+    const QString ns = nodeRecv.namespaceURI();
+
+    if(ns != ns_sasl) {
+        warning("unexpeced answer in authentication");
+        disconnectFromHost();
+        return;
+    }
+
+    if(nodeRecv.tagName() == "success")
+    {
+        debug("Authenticated");
+        d->state = QXmppOutgoingClientPrivate::Authenticated;
+        d->isAuthenticated = true;
+        handleStart();
+    }
+    else if(nodeRecv.tagName() == "challenge")
+    {
+        QXmppSaslChallenge challenge;
+        challenge.parse(nodeRecv);
+
+        QByteArray response;
+        if (d->saslClient->respond(challenge.value(), response)) {
+            sendPacket(QXmppSaslResponse(response));
+        } else {
+            warning("Could not respond to SASL challenge");
+            disconnectFromHost();
+        }
+    }
+    else if(nodeRecv.tagName() == "failure")
+    {
+        QXmppSaslFailure failure;
+        failure.parse(nodeRecv);
+
+        // RFC3920 defines the error condition as "not-authorized", but
+        // some broken servers use "bad-auth" instead. We tolerate this
+        // by remapping the error to "not-authorized".
+        if (failure.condition() == "not-authorized" || failure.condition() == "bad-auth")
+            d->xmppStreamError = QXmppStanza::Error::NotAuthorized;
+        else
+            d->xmppStreamError = QXmppStanza::Error::UndefinedCondition;
+        emit error(QXmppClient::XmppStreamError);
+
+        warning("Authentication failure");
+        disconnectFromHost();
+    }
+
+}
+
 void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
 {
     // if we receive any kind of data, stop the ping timeout timer
     d->pingTimeoutTimer->stop();
 
+    if (d->state == QXmppOutgoingClientPrivate::WaitingForStreamFeatures) {
+        handleStreamFeaturesOrDisconnect(nodeRecv);
+        return;
+    } else if (d->state == QXmppOutgoingClientPrivate::StartingTLS) {
+        handleTLSProceedOrDisconnect(nodeRecv);
+        return;
+    } else if (d->state == QXmppOutgoingClientPrivate::Authenticating) {
+        handleAuthResponseOrDisonnect(nodeRecv);
+        return;
+    }
+
+
+    // we should only get here if the connection is authenticated and encrypted if encryption is required
+    if (!isAuthenticated()) {
+        warning("not authenticated");
+        disconnectFromHost();
+        return;
+    }
+    if (d->state != QXmppOutgoingClientPrivate::Authenticated) {
+        warning("invalid state - should be Authenticated");
+        disconnectFromHost();
+        return;
+    }
 
     const QString ns = nodeRecv.namespaceURI();
 
@@ -380,141 +654,7 @@ void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
     emit elementReceived(nodeRecv, handled);
     if (handled)
         return;
-
-    if(QXmppStreamFeatures::isStreamFeatures(nodeRecv))
-    {
-        QXmppStreamFeatures features;
-        features.parse(nodeRecv);
-
-        if (!socket()->isEncrypted())
-        {
-            // determine TLS mode to use
-            const QXmppConfiguration::StreamSecurityMode localSecurity = configuration().streamSecurityMode();
-            const QXmppStreamFeatures::Mode remoteSecurity = features.tlsMode();
-            if (!socket()->supportsSsl() &&
-                (localSecurity == QXmppConfiguration::TLSRequired ||
-                 remoteSecurity == QXmppStreamFeatures::Required))
-            {
-                warning("Disconnecting as TLS is required, but SSL support is not available");
-                disconnectFromHost();
-                return;
-            }
-            if (localSecurity == QXmppConfiguration::TLSRequired &&
-                remoteSecurity == QXmppStreamFeatures::Disabled)
-            {
-                warning("Disconnecting as TLS is required, but not supported by the server");
-                disconnectFromHost();
-                return;
-            }
-
-            if (socket()->supportsSsl() &&
-                localSecurity != QXmppConfiguration::TLSDisabled &&
-                remoteSecurity != QXmppStreamFeatures::Disabled)
-            {
-                // enable TLS as it is support by both parties
-                sendData("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
-                return;
-            }
-        }
-
-        // handle authentication
-        const bool nonSaslAvailable = features.nonSaslAuthMode() != QXmppStreamFeatures::Disabled;
-        const bool saslAvailable = !features.authMechanisms().isEmpty();
-        if (saslAvailable && configuration().useSASLAuthentication())
-        {
-            // supported and preferred SASL auth mechanisms
-            QStringList supportedMechanisms = QXmppSaslClient::availableMechanisms();
-            const QString preferredMechanism = configuration().saslAuthMechanism();
-            if (configuration().facebookAppId().isEmpty() || configuration().facebookAccessToken().isEmpty())
-                supportedMechanisms.removeAll("X-FACEBOOK-PLATFORM");
-            if (configuration().windowsLiveAccessToken().isEmpty())
-                supportedMechanisms.removeAll("X-MESSENGER-OAUTH2");
-            if (configuration().googleAccessToken().isEmpty())
-                supportedMechanisms.removeAll("X-OAUTH2");
-
-            // determine SASL Authentication mechanism to use
-            QStringList commonMechanisms;
-            QString usedMechanism;
-            foreach (const QString &mechanism, features.authMechanisms()) {
-                if (supportedMechanisms.contains(mechanism))
-                    commonMechanisms << mechanism;
-            }
-            if (commonMechanisms.isEmpty()) {
-                warning("No supported SASL Authentication mechanism available");
-                disconnectFromHost();
-                return;
-            } else if (!commonMechanisms.contains(preferredMechanism)) {
-                info(QString("Desired SASL Auth mechanism '%1' is not available, selecting first available one").arg(preferredMechanism));
-                usedMechanism = commonMechanisms.first();
-            } else {
-                usedMechanism = preferredMechanism;
-            }
-
-            d->saslClient = QXmppSaslClient::create(usedMechanism, this);
-            if (!d->saslClient) {
-                warning("SASL mechanism negotiation failed");
-                disconnectFromHost();
-                return;
-            }
-            info(QString("SASL mechanism '%1' selected").arg(d->saslClient->mechanism()));
-            d->saslClient->setHost(d->config.domain());
-            d->saslClient->setServiceType("xmpp");
-            if (d->saslClient->mechanism() == "X-FACEBOOK-PLATFORM") {
-                d->saslClient->setUsername(configuration().facebookAppId());
-                d->saslClient->setPassword(configuration().facebookAccessToken());
-            } else if (d->saslClient->mechanism() == "X-MESSENGER-OAUTH2") {
-                d->saslClient->setPassword(configuration().windowsLiveAccessToken());
-            } else if (d->saslClient->mechanism() == "X-OAUTH2") {
-                d->saslClient->setUsername(configuration().user());
-                d->saslClient->setPassword(configuration().googleAccessToken());
-            } else {
-                d->saslClient->setUsername(configuration().user());
-                d->saslClient->setPassword(configuration().password());
-            }
-
-            // send SASL auth request
-            QByteArray response;
-            if (!d->saslClient->respond(QByteArray(), response)) {
-                warning("SASL initial response failed");
-                disconnectFromHost();
-                return;
-            }
-            sendPacket(QXmppSaslAuth(d->saslClient->mechanism(), response));
-            return;
-        } else if(nonSaslAvailable && configuration().useNonSASLAuthentication()) {
-            sendNonSASLAuthQuery();
-            return;
-        }
-
-        // store whether session is available
-        d->sessionAvailable = (features.sessionMode() != QXmppStreamFeatures::Disabled);
-
-        // check whether bind is available
-        if (features.bindMode() != QXmppStreamFeatures::Disabled)
-        {
-            QXmppBindIq bind;
-            bind.setType(QXmppIq::Set);
-            bind.setResource(configuration().resource());
-            d->bindId = bind.id();
-            sendPacket(bind);
-            return;
-        }
-
-        // check whether session is available
-        if (d->sessionAvailable)
-        {
-            // start session if it is available
-            QXmppSessionIq session;
-            session.setType(QXmppIq::Set);
-            session.setTo(configuration().domain());
-            d->sessionId = session.id();
-            sendPacket(session);
-        } else {
-            // otherwise we are done
-            sessionStarted();
-        }
-    }
-    else if(ns == ns_stream && nodeRecv.tagName() == "error")
+    if(ns == ns_stream && nodeRecv.tagName() == "error")
     {
         // handle redirects
         QRegExp redirectRegex("([^:]+)(:[0-9]+)?");
@@ -534,58 +674,7 @@ void QXmppOutgoingClient::handleStanza(const QDomElement &nodeRecv)
             d->xmppStreamError = QXmppStanza::Error::UndefinedCondition;
         emit error(QXmppClient::XmppStreamError);
     }
-    else if(ns == ns_tls)
-    {
-        if(nodeRecv.tagName() == "proceed")
-        {
-            debug("Starting encryption");
-            socket()->startClientEncryption();
-            return;
-        }
-    }
-    else if(ns == ns_sasl)
-    {
-        if (!d->saslClient) {
-            warning("SASL stanza received, but no mechanism selected");
-            return;
-        }
-        if(nodeRecv.tagName() == "success")
-        {
-            debug("Authenticated");
-            d->isAuthenticated = true;
-            handleStart();
-        }
-        else if(nodeRecv.tagName() == "challenge")
-        {
-            QXmppSaslChallenge challenge;
-            challenge.parse(nodeRecv);
 
-            QByteArray response;
-            if (d->saslClient->respond(challenge.value(), response)) {
-                sendPacket(QXmppSaslResponse(response));
-            } else {
-                warning("Could not respond to SASL challenge");
-                disconnectFromHost();
-            }
-        }
-        else if(nodeRecv.tagName() == "failure")
-        {
-            QXmppSaslFailure failure;
-            failure.parse(nodeRecv);
-
-            // RFC3920 defines the error condition as "not-authorized", but
-            // some broken servers use "bad-auth" instead. We tolerate this
-            // by remapping the error to "not-authorized".
-            if (failure.condition() == "not-authorized" || failure.condition() == "bad-auth")
-                d->xmppStreamError = QXmppStanza::Error::NotAuthorized;
-            else
-                d->xmppStreamError = QXmppStanza::Error::UndefinedCondition;
-            emit error(QXmppClient::XmppStreamError);
-
-            warning("Authentication failure");
-            disconnectFromHost();
-        }
-    }
     else if(ns == ns_client)
     {
 

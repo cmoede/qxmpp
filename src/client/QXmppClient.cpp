@@ -226,7 +226,7 @@ QList<QXmppClientExtension*> QXmppClient::extensions()
 /// Returns a modifiable reference to the current configuration of QXmppClient.
 /// \return Reference to the QXmppClient's configuration for the connection.
 
-QXmppConfiguration& QXmppClient::configuration()
+const QXmppConfiguration& QXmppClient::configuration() const
 {
     return d->stream->configuration();
 }
@@ -242,7 +242,7 @@ QXmppConfiguration& QXmppClient::configuration()
 void QXmppClient::connectToServer(const QXmppConfiguration& config,
                                   const QXmppPresence& initialPresence)
 {
-    d->stream->configuration() = config;
+    d->stream->setConfiguration(config);
     d->clientPresence = initialPresence;
     d->addProperCapability(d->clientPresence);
 
@@ -309,6 +309,8 @@ void QXmppClient::disconnectFromServer()
 
 bool QXmppClient::isAuthenticated() const
 {
+
+
     return d->stream->isAuthenticated();
 }
 

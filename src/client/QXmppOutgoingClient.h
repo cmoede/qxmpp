@@ -49,18 +49,21 @@ class QXMPP_EXPORT QXmppOutgoingClient : public QXmppStream
     Q_OBJECT
 
 public:
+
     QXmppOutgoingClient(QObject *parent);
     ~QXmppOutgoingClient();
 
     void connectToHost();
-    bool isAuthenticated() const;
+
+    virtual bool isAuthenticated() const override;
     bool isConnected() const;
 
     QSslSocket *socket() const { return QXmppStream::socket(); };
     QXmppStanza::Error::Condition xmppStreamError();
 
+    const QXmppConfiguration& configuration() const;
     QXmppConfiguration& configuration();
-
+    void setConfiguration(const QXmppConfiguration &conf);
 signals:
     /// This signal is emitted when an error is encountered.
     void error(QXmppClient::Error);
@@ -101,6 +104,10 @@ private slots:
 
     void connectTimeout();
 private:
+    void handleStreamFeaturesOrDisconnect(const QDomElement& nodeRecv);
+    void handleTLSProceedOrDisconnect(const QDomElement& nodeRecv);
+    void handleAuthResponseOrDisonnect(const QDomElement& nodeRecv);
+
     void sendNonSASLAuth(bool plaintext);
     void sendNonSASLAuthQuery();
     void sessionStarted();

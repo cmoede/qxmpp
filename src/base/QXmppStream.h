@@ -47,6 +47,7 @@ public:
     ~QXmppStream();
 
     virtual bool isConnected() const;
+    virtual bool isAuthenticated() const { return true; }
     bool sendPacket(const QXmppStanza&);
 
 signals:
